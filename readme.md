@@ -472,3 +472,213 @@ module.exports = {
 ```
 
 Después se debería manejar como un proyecto separado de producción con políticas de mergeo.
+
+
+### Extras (después agregar donde corresponda):
+# PostgreSQL en VPS - Lambda Works (setup inicial + acceso + clon prod->test)
+
+---
+
+## 1) Convencion de nombres (obligatoria)
+
+Para mantener orden entre proyectos:
+
+- **DB produccion**: `<proyecto>_backend_prod`
+- **DB testing/dev**: `<proyecto>_backend_dev`
+- **Usuario app**: `app_<proyecto>_backend`
+
+Ejemplo para Optica Marani:
+
+- `opticamarani_backend_prod`
+- `opticamarani_backend_dev`
+- `app_opticamarani_backend`
+
+Reglas:
+
+- siempre minusculas
+- usar `_` para separar
+- sin espacios, tildes ni guiones
+
+---
+
+## 2) Requisitos en el VPS
+
+Instalar PostgreSQL (si no esta):
+
+```bash
+sudo apt update
+sudo apt install postgresql postgresql-contrib -y
+```
+
+Verificar que este activo:
+
+```bash
+sudo systemctl status postgresql
+```
+
+---
+
+## 3) Primera creacion de DB (Optica Marani)
+
+Variables del ejemplo:
+
+- `DB_PROD=opticamarani_backend_prod`
+- `DB_DEV=opticamarani_backend_dev`
+- `APP_USER=app_opticamarani_backend`
+
+Entrar a PostgreSQL como admin del sistema:
+
+```bash
+sudo -u postgres psql
+```
+
+Crear usuario (una sola vez por proyecto):
+
+```sql
+CREATE USER app_opticamarani_backend WITH PASSWORD 'CAMBIAR_PASSWORD_SEGURA';
+```
+
+Crear bases y asignar owner:
+
+```sql
+CREATE DATABASE opticamarani_backend_prod OWNER app_opticamarani_backend;
+CREATE DATABASE opticamarani_backend_dev OWNER app_opticamarani_backend;
+```
+
+Permisos explicitos:
+
+```sql
+GRANT ALL PRIVILEGES ON DATABASE opticamarani_backend_prod TO app_opticamarani_backend;
+GRANT ALL PRIVILEGES ON DATABASE opticamarani_backend_dev TO app_opticamarani_backend;
+\q
+```
+
+---
+
+## 4) Como acceder despues (dia a dia)
+
+Conexion directa por consola:
+
+```bash
+psql -h localhost -U app_opticamarani_backend -d opticamarani_backend_prod -W
+psql -h localhost -U app_opticamarani_backend -d opticamarani_backend_dev -W
+```
+
+En backend (`.env`) usar una URL por entorno.
+
+Produccion:
+
+```env
+DATABASE_URL=postgresql://app_opticamarani_backend:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_backend_prod
+```
+
+Testing/dev:
+
+```env
+DATABASE_URL=postgresql://app_opticamarani_backend:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_backend_dev
+```
+
+Si usan Prisma, recordar:
+
+```bash
+cd backend
+npx prisma migrate deploy   # prod
+npx prisma migrate dev      # dev local/testing
+npx prisma generate
+```
+
+---
+
+## 5) Copiar DB de produccion a testing (prod -> dev)
+
+Este flujo sirve para probar con datos reales sin tocar produccion.
+
+### 5.1 Dump de produccion
+
+Formato custom (`-Fc`) recomendado:
+
+```bash
+PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
+  -h localhost \
+  -U app_opticamarani_backend \
+  -d opticamarani_backend_prod \
+  -Fc \
+  -f /tmp/opticamarani_prod.dump
+```
+
+### 5.2 Recrear base de testing limpia
+
+```bash
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS opticamarani_backend_dev;"
+sudo -u postgres psql -c "CREATE DATABASE opticamarani_backend_dev OWNER app_opticamarani_backend;"
+```
+
+### 5.3 Restore en testing
+
+```bash
+PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
+  -h localhost \
+  -U app_opticamarani_backend \
+  -d opticamarani_backend_dev \
+  --no-owner \
+  --no-privileges \
+  /tmp/opticamarani_prod.dump
+```
+
+### 5.4 Verificacion rapida
+
+```bash
+PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
+  -h localhost \
+  -U app_opticamarani_backend \
+  -d opticamarani_backend_dev \
+  -c "\dt"
+```
+
+### 5.5 Recomendaciones de seguridad
+
+- nunca restaurar sobre `*_prod`
+- hacer backup antes de cada restore
+- si hay datos sensibles, anonimizar luego del restore (clientes, telefonos, emails, etc.)
+
+---
+
+## 6) Comandos utiles de operacion
+
+Listar bases:
+
+```bash
+sudo -u postgres psql -c "\l"
+```
+
+Listar usuarios/roles:
+
+```bash
+sudo -u postgres psql -c "\du"
+```
+
+Cambiar password del usuario app:
+
+```bash
+sudo -u postgres psql -c "ALTER USER app_opticamarani_backend WITH PASSWORD 'NUEVA_PASSWORD';"
+```
+
+Backup rapido:
+
+```bash
+PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
+  -h localhost -U app_opticamarani_backend -d opticamarani_backend_prod \
+  > /tmp/opticamarani_backend_prod_$(date +%F).sql
+```
+
+---
+
+## 7) Checklist por cada nuevo proyecto/cliente
+
+1. Definir `<proyecto>_backend_prod`, `<proyecto>_backend_dev`, `app_<proyecto>_backend`.
+2. Crear usuario app (si no existe), DB prod y DB dev.
+3. Probar conexion con `psql` en ambas.
+4. Configurar `DATABASE_URL` por entorno en `.env`.
+5. Correr migraciones Prisma segun entorno.
+6. Definir rutina de backup y (si aplica) rutina de clon `prod -> dev`.
+
