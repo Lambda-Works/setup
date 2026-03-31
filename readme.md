@@ -351,6 +351,12 @@ Por:
         proxy_pass         http://127.0.0.1:<PUERTO>;
 ```
 
+#### Lo anterior ya está automatizado:
+Usar comando
+```bash
+create-proxy-templates <PUERTO-BACKEND> <PUERTO-FRONTEND>
+```
+
 Una vez creados los templates recargar el config de Hestia desde la consola:
 ```bash
 v-rebuild-web-domains user
