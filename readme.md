@@ -475,7 +475,7 @@ Después se debería manejar como un proyecto separado de producción con polít
 
 
 ### Extras (después agregar donde corresponda):
-# PostgreSQL en VPS - Lambda Works (setup inicial + acceso + clon prod->test)
+# PostgreSQL
 
 ---
 
@@ -483,15 +483,15 @@ Después se debería manejar como un proyecto separado de producción con polít
 
 Para mantener orden entre proyectos:
 
-- **DB produccion**: `<proyecto>_backend_prod`
-- **DB testing/dev**: `<proyecto>_backend_dev`
-- **Usuario app**: `app_<proyecto>_backend`
+- **DB produccion**: `<proyecto>_prod`
+- **DB testing/dev**: `<proyecto>_dev`
+- **Usuario app**: `<proyecto>`
 
 Ejemplo para Optica Marani:
 
-- `opticamarani_backend_prod`
-- `opticamarani_backend_dev`
-- `app_opticamarani_backend`
+- `opticamarani_prod`
+- `opticamarani_dev`
+- `opticamarani`
 
 Reglas:
 
@@ -522,9 +522,9 @@ sudo systemctl status postgresql
 
 Variables del ejemplo:
 
-- `DB_PROD=opticamarani_backend_prod`
-- `DB_DEV=opticamarani_backend_dev`
-- `APP_USER=app_opticamarani_backend`
+- `DB_PROD=opticamarani_prod`
+- `DB_DEV=opticamarani_dev`
+- `APP_USER=opticamarani`
 
 Entrar a PostgreSQL como admin del sistema:
 
@@ -535,21 +535,21 @@ sudo -u postgres psql
 Crear usuario (una sola vez por proyecto):
 
 ```sql
-CREATE USER app_opticamarani_backend WITH PASSWORD 'CAMBIAR_PASSWORD_SEGURA';
+CREATE USER opticamarani WITH PASSWORD 'CAMBIAR_PASSWORD_SEGURA';
 ```
 
 Crear bases y asignar owner:
 
 ```sql
-CREATE DATABASE opticamarani_backend_prod OWNER app_opticamarani_backend;
-CREATE DATABASE opticamarani_backend_dev OWNER app_opticamarani_backend;
+CREATE DATABASE opticamarani_prod OWNER opticamarani;
+CREATE DATABASE opticamarani_dev OWNER opticamarani;
 ```
 
 Permisos explicitos:
 
 ```sql
-GRANT ALL PRIVILEGES ON DATABASE opticamarani_backend_prod TO app_opticamarani_backend;
-GRANT ALL PRIVILEGES ON DATABASE opticamarani_backend_dev TO app_opticamarani_backend;
+GRANT ALL PRIVILEGES ON DATABASE opticamarani_prod TO opticamarani;
+GRANT ALL PRIVILEGES ON DATABASE opticamarani_dev TO opticamarani;
 \q
 ```
 
@@ -560,8 +560,8 @@ GRANT ALL PRIVILEGES ON DATABASE opticamarani_backend_dev TO app_opticamarani_ba
 Conexion directa por consola:
 
 ```bash
-psql -h localhost -U app_opticamarani_backend -d opticamarani_backend_prod -W
-psql -h localhost -U app_opticamarani_backend -d opticamarani_backend_dev -W
+psql -h localhost -U opticamarani -d opticamarani_prod -W
+psql -h localhost -U opticamarani -d opticamarani_dev -W
 ```
 
 En backend (`.env`) usar una URL por entorno.
@@ -569,13 +569,13 @@ En backend (`.env`) usar una URL por entorno.
 Produccion:
 
 ```env
-DATABASE_URL=postgresql://app_opticamarani_backend:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_backend_prod
+DATABASE_URL=postgresql://opticamarani:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_prod
 ```
 
 Testing/dev:
 
 ```env
-DATABASE_URL=postgresql://app_opticamarani_backend:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_backend_dev
+DATABASE_URL=postgresql://opticamarani:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_dev
 ```
 
 Si usan Prisma, recordar:
@@ -600,8 +600,8 @@ Formato custom (`-Fc`) recomendado:
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
   -h localhost \
-  -U app_opticamarani_backend \
-  -d opticamarani_backend_prod \
+  -U opticamarani \
+  -d opticamarani_prod \
   -Fc \
   -f /tmp/opticamarani_prod.dump
 ```
@@ -609,8 +609,8 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
 ### 5.2 Recrear base de testing limpia
 
 ```bash
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS opticamarani_backend_dev;"
-sudo -u postgres psql -c "CREATE DATABASE opticamarani_backend_dev OWNER app_opticamarani_backend;"
+sudo -u postgres psql -c "DROP DATABASE IF EXISTS opticamarani_dev;"
+sudo -u postgres psql -c "CREATE DATABASE opticamarani_dev OWNER opticamarani;"
 ```
 
 ### 5.3 Restore en testing
@@ -618,8 +618,8 @@ sudo -u postgres psql -c "CREATE DATABASE opticamarani_backend_dev OWNER app_opt
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
   -h localhost \
-  -U app_opticamarani_backend \
-  -d opticamarani_backend_dev \
+  -U opticamarani \
+  -d opticamarani_dev \
   --no-owner \
   --no-privileges \
   /tmp/opticamarani_prod.dump
@@ -630,8 +630,8 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
   -h localhost \
-  -U app_opticamarani_backend \
-  -d opticamarani_backend_dev \
+  -U opticamarani \
+  -d opticamarani_dev \
   -c "\dt"
 ```
 
@@ -660,22 +660,22 @@ sudo -u postgres psql -c "\du"
 Cambiar password del usuario app:
 
 ```bash
-sudo -u postgres psql -c "ALTER USER app_opticamarani_backend WITH PASSWORD 'NUEVA_PASSWORD';"
+sudo -u postgres psql -c "ALTER USER opticamarani WITH PASSWORD 'NUEVA_PASSWORD';"
 ```
 
 Backup rapido:
 
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
-  -h localhost -U app_opticamarani_backend -d opticamarani_backend_prod \
-  > /tmp/opticamarani_backend_prod_$(date +%F).sql
+  -h localhost -U opticamarani -d opticamarani_prod \
+  > /tmp/opticamarani_prod_$(date +%F).sql
 ```
 
 ---
 
 ## 7) Checklist por cada nuevo proyecto/cliente
 
-1. Definir `<proyecto>_backend_prod`, `<proyecto>_backend_dev`, `app_<proyecto>_backend`.
+1. Definir `<proyecto>_prod`, `<proyecto>_dev`, `<proyecto>`.
 2. Crear usuario app (si no existe), DB prod y DB dev.
 3. Probar conexion con `psql` en ambas.
 4. Configurar `DATABASE_URL` por entorno en `.env`.
