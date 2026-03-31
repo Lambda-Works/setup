@@ -475,7 +475,7 @@ Después se debería manejar como un proyecto separado de producción con polít
 
 
 ### Extras (después agregar donde corresponda):
-# PostgreSQL
+# PostgreSQL en VPS
 
 ---
 
@@ -550,7 +550,19 @@ Permisos explicitos:
 ```sql
 GRANT ALL PRIVILEGES ON DATABASE opticamarani_prod TO opticamarani;
 GRANT ALL PRIVILEGES ON DATABASE opticamarani_dev TO opticamarani;
+```
+
+**Prisma Migrate (`migrate dev`):** hace falta que el usuario pueda crear bases temporales (shadow database). Sin eso falla con **P3014**. Asignar una sola vez:
+
+```sql
+ALTER USER opticamarani CREATEDB;
 \q
+```
+
+Comprobar que figure `Create DB` en atributos:
+
+```bash
+sudo -u postgres psql -c "\du opticamarani"
 ```
 
 ---
@@ -589,11 +601,46 @@ npx prisma generate
 
 ---
 
-## 5) Copiar DB de produccion a testing (prod -> dev)
+## 5) Prisma: error P3014 (shadow database)
+
+Si al correr `npx prisma migrate dev` aparece:
+
+```text
+Error: P3014
+
+Prisma Migrate could not create the shadow database. Please make sure the database user has permission to create databases.
+...
+ERROR: permission denied to create database
+```
+
+**Causa:** `migrate dev` necesita una base “shadow” que Prisma crea y borra; el rol de PostgreSQL usado en `DATABASE_URL` debe poder crear bases (`CREATEDB`).
+
+**Solución** (reemplazar `opticamarani` por el usuario del proyecto):
+
+```bash
+sudo -u postgres psql -c "ALTER USER opticamarani CREATEDB;"
+sudo -u postgres psql -c "\du opticamarani"
+```
+
+En `\du` debe verse **Create DB** en la columna de atributos.  
+Vuelve a ejecutar:
+
+```bash
+cd backend
+npx prisma migrate dev
+```
+
+**Alternativa** si no quieren dar `CREATEDB`: crear una DB fija para shadow y usar `shadowDatabaseUrl` en `schema.prisma` (ver [documentación de Prisma](https://pris.ly/d/migrate-shadow)).
+
+**Nota:** el aviso `package.json#prisma is deprecated` viene de tener el seed en `package.json`; en Prisma 7 conviene migrar a `prisma.config.ts`. No afecta a que las migraciones funcionen hoy.
+
+---
+
+## 6) Copiar DB de produccion a testing (prod -> dev)
 
 Este flujo sirve para probar con datos reales sin tocar produccion.
 
-### 5.1 Dump de produccion
+### 6.1 Dump de produccion
 
 Formato custom (`-Fc`) recomendado:
 
@@ -606,14 +653,14 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
   -f /tmp/opticamarani_prod.dump
 ```
 
-### 5.2 Recrear base de testing limpia
+### 6.2 Recrear base de testing limpia
 
 ```bash
 sudo -u postgres psql -c "DROP DATABASE IF EXISTS opticamarani_dev;"
 sudo -u postgres psql -c "CREATE DATABASE opticamarani_dev OWNER opticamarani;"
 ```
 
-### 5.3 Restore en testing
+### 6.3 Restore en testing
 
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
@@ -625,7 +672,7 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
   /tmp/opticamarani_prod.dump
 ```
 
-### 5.4 Verificacion rapida
+### 6.4 Verificacion rapida
 
 ```bash
 PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
@@ -635,7 +682,7 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
   -c "\dt"
 ```
 
-### 5.5 Recomendaciones de seguridad
+### 6.5 Recomendaciones de seguridad
 
 - nunca restaurar sobre `*_prod`
 - hacer backup antes de cada restore
@@ -643,7 +690,7 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
 
 ---
 
-## 6) Comandos utiles de operacion
+## 7) Comandos utiles de operacion
 
 Listar bases:
 
@@ -673,12 +720,11 @@ PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
 
 ---
 
-## 7) Checklist por cada nuevo proyecto/cliente
+## 8) Checklist por cada nuevo proyecto/cliente
 
 1. Definir `<proyecto>_prod`, `<proyecto>_dev`, `<proyecto>`.
-2. Crear usuario app (si no existe), DB prod y DB dev.
+2. Crear usuario app (si no existe), DB prod y DB dev, y `ALTER USER ... CREATEDB` si usan `prisma migrate dev`.
 3. Probar conexion con `psql` en ambas.
 4. Configurar `DATABASE_URL` por entorno en `.env`.
 5. Correr migraciones Prisma segun entorno.
 6. Definir rutina de backup y (si aplica) rutina de clon `prod -> dev`.
-
