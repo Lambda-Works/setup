@@ -1,0 +1,76 @@
+name: CI - Docker Compose Dev
+
+env:
+  FRONTEND_PATH: frontend
+  BACKEND_PATH: backend
+  BACKEND_PORT: 3001
+  FRONTEND_PORT: 3000
+  HEALTH_ENDPOINT: /health
+  POSTGRES_SERVICE: postgres
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  build-and-test:
+    name: Build & Verify Dev Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Descargar el código del repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Copiar el archivo de variables de entorno
+      - name: Setup environment variables
+        run: cp .env.example .env
+
+      # 3. Verificar build de producción del Frontend (detecta errores de compilación)
+      - name: Verify Frontend production build
+        run: |
+          echo "Building Frontend with Dockerfile to verify no compile errors..."
+          docker build -f ${{ env.FRONTEND_PATH }}/Dockerfile -t frontend-build-check .
+          echo "✓ Frontend production build successful"
+
+      # 4. Levantar los servicios con Docker Compose y esperar healthchecks
+      - name: Build and start Docker Compose services
+        run: docker compose up -d --build --wait
+
+      # 5. Esperar a que los servicios arranquen
+      - name: Wait for services to start
+        run: |
+          echo "Waiting 15 seconds for Backend and Frontend to initialize..."
+          sleep 15
+
+      # 6. Verificar que el Backend responde (healthcheck)
+      - name: Verify Backend is running
+        run: |
+          echo "Checking Backend at http://localhost:${{ env.BACKEND_PORT }}${{ env.HEALTH_ENDPOINT }} ..."
+          curl -f -s --max-time 30 \
+            -o /dev/null \
+            -w "Backend Response: HTTP %{http_code}\n" \
+            http://localhost:${{ env.BACKEND_PORT }}${{ env.HEALTH_ENDPOINT }}
+
+      # 7. Verificar que el Frontend responde (siguiendo redirects)
+      - name: Verify Frontend is running
+        run: |
+          echo "Checking Frontend at http://localhost:${{ env.FRONTEND_PORT }} ..."
+          curl -L -f -s --max-time 30 \
+            -o /dev/null \
+            -w "Frontend Response: HTTP %{http_code}\n" \
+            http://localhost:${{ env.FRONTEND_PORT }}
+
+      # 8. Si falló algo, mostrar logs para debug
+      - name: Print logs on failure
+        if: failure()
+        run: |
+          echo "========== DOCKER COMPOSE LOGS =========="
+          docker compose logs --tail 100
+
+      # 9. Limpiar contenedores y recursos
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

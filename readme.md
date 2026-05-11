@@ -5,19 +5,21 @@
 ## 📌 Índice
 
 1. Setup repo  
+1.1 CI/CD — GitHub Actions  
 2. Frontend (Next.js)  
 3. Backend (NestJS + Prisma + PostgreSQL) — incluye PostgreSQL + Prisma  
-4. Workspaces  
-5. Estructura final (repo)  
-6. `.gitignore`  
-7. VPS — estructura, releases, PM2  
-8. HestiaCP — proxy, dominio, SSL, DNS, error Let’s Encrypt  
-9. Deploy en el VPS (releases + build monorepo)  
-10. Entorno de testing
+4. Docker Compose  
+5. Workspaces  
+6. Estructura final (repo)  
+7. `.gitignore`  
+8. VPS — estructura, releases, PM2  
+9. HestiaCP — proxy, dominio, SSL, DNS, error Let’s Encrypt  
+10. Deploy en el VPS (releases + build monorepo)  
+11. Entorno de testing
 
 ---
 
-> **Arquitectura por defecto de esta guía:** frontend (Next.js) y backend (NestJS) en el **mismo VPS** - Hestia (proxy + SSL) y PM2.
+> **Arquitectura por defecto de esta guía:** frontend (Next.js) y backend (NestJS) en el **mismo VPS** — Hestia (proxy + SSL), Docker Compose y PM2.
 
 ## 1. 🚀 Setup repo
 
@@ -28,13 +30,112 @@ Ahora en local:
 mkdir <nombre-proyecto>
 cd <nombre-proyecto>
 git init
+mkdir -p .github/workflows
+cp /ruta/al/template/ci.yml .github/workflows/ci.yml
 echo "# <nombre-proyecto>" >> README.md
 git add README.md
 git commit -m "first commit"
 git branch -M main
 git remote add origin https://github.com/lambdaworksar/<nombre-proyecto>.git
 git push -u origin main
+
+# Crear y pushear ramas principales
+git checkout -b develop
+git push -u origin develop
+git checkout -b production
+git push -u origin production
+git checkout develop
 ```
+
+> **Ramas del proyecto:** cada repositorio debe contener al menos tres ramas principales:
+> - `main` — código estable de producción.
+> - `develop` — desarrollo activo (se deploya al entorno de testing).
+> - `production` — reflejo exacto de lo que está en el VPS de producción (gestionada por el Hub y GitHub Actions).
+
+## 1.1 🔄 CI/CD — GitHub Actions
+
+Crear el archivo `.github/workflows/ci.yml` con el siguiente contenido:
+
+```yaml
+name: CI - Docker Compose Dev
+
+env:
+  FRONTEND_PATH: frontend
+  BACKEND_PATH: backend
+  BACKEND_PORT: 3001
+  FRONTEND_PORT: 3000
+  HEALTH_ENDPOINT: /health
+  POSTGRES_SERVICE: postgres
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  build-and-test:
+    name: Build & Verify Dev Environment
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Descargar el código del repositorio
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Copiar el archivo de variables de entorno
+      - name: Setup environment variables
+        run: cp .env.example .env
+
+      # 3. Verificar build de producción del Frontend (detecta errores de compilación)
+      - name: Verify Frontend production build
+        run: |
+          echo "Building Frontend with Dockerfile to verify no compile errors..."
+          docker build -f ${{ env.FRONTEND_PATH }}/Dockerfile -t frontend-build-check .
+          echo "✓ Frontend production build successful"
+
+      # 4. Levantar los servicios con Docker Compose y esperar healthchecks
+      - name: Build and start Docker Compose services
+        run: docker compose up -d --build --wait
+
+      # 5. Esperar a que los servicios arranquen
+      - name: Wait for services to start
+        run: |
+          echo "Waiting 15 seconds for Backend and Frontend to initialize..."
+          sleep 15
+
+      # 6. Verificar que el Backend responde (healthcheck)
+      - name: Verify Backend is running
+        run: |
+          echo "Checking Backend at http://localhost:${{ env.BACKEND_PORT }}${{ env.HEALTH_ENDPOINT }} ..."
+          curl -f -s --max-time 30 \
+            -o /dev/null \
+            -w "Backend Response: HTTP %{http_code}\n" \
+            http://localhost:${{ env.BACKEND_PORT }}${{ env.HEALTH_ENDPOINT }}
+
+      # 7. Verificar que el Frontend responde (siguiendo redirects)
+      - name: Verify Frontend is running
+        run: |
+          echo "Checking Frontend at http://localhost:${{ env.FRONTEND_PORT }} ..."
+          curl -L -f -s --max-time 30 \
+            -o /dev/null \
+            -w "Frontend Response: HTTP %{http_code}\n" \
+            http://localhost:${{ env.FRONTEND_PORT }}
+
+      # 8. Si falló algo, mostrar logs para debug
+      - name: Print logs on failure
+        if: failure()
+        run: |
+          echo "========== DOCKER COMPOSE LOGS =========="
+          docker compose logs --tail 100
+
+      # 9. Limpiar contenedores y recursos
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
+```
+
+> **Nota:** este workflow se dispara automáticamente en cada push a la rama `develop` y en cada pull request dirigido a `develop` o `main`. Verifica que el frontend compila, levanta los servicios con Docker Compose, espera a que estén healthy y comprueba que ambos respondan por HTTP.
 
 ## 2. ⚛️ Frontend (Next.js)
 
@@ -116,7 +217,78 @@ npx prisma generate
 Otros útiles (según necesidad): `npx prisma db pull` (introspección desde una DB existente), `npx prisma migrate deploy` (aplicar migraciones en staging/prod sin modo interactivo). Consultá `npx prisma --help` y `npx prisma <comando> --help`.
 
 
-## 4. 📦 Workspaces
+## 4. 🐳 Docker Compose
+
+Cada proyecto debe incluir los siguientes archivos en la raíz para poder deployar desde el Hub.
+
+**`docker-compose.yml`** (desarrollo local):
+
+```yaml
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "3001:3001"
+    env_file: ./backend/.env
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    env_file: ./frontend/.env
+```
+
+**`docker-compose.prod.yml`** (producción — usado por el Hub):
+
+```yaml
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "${PUERTO_API}:3001"
+    env_file: ./backend/.env
+  frontend:
+    build: ./frontend
+    ports:
+      - "${PUERTO_WEB}:3000"
+    env_file: ./frontend/.env
+```
+
+**`backend/Dockerfile`**:
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+CMD ["npm", "start"]
+```
+
+**`frontend/Dockerfile`**:
+
+```dockerfile
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+CMD ["npm", "start"]
+```
+
+> **Importante:** El archivo `docker-compose.prod.yml` es el que el Hub utiliza para ejecutar el deploy en el VPS. Los puertos de producción se inyectan como variables de entorno (`PUERTO_API`, `PUERTO_WEB`) definidas en el servidor.
+>
+> **Convenciones por defecto:**
+> - Backend escucha en el puerto `3001`.
+> - Frontend escucha en el puerto `3000`.
+> - Se pueden cambiar editando los `ports` en `docker-compose.yml` y las variables `PUERTO_API` / `PUERTO_WEB` en el VPS.
+> - El backend debe exponer un endpoint `GET /health` que responda HTTP 200 para que el CI pueda verificar que levantó correctamente.
+
+---
+
+
+## 5. 📦 Workspaces
 `package.json` en root del proyecto:
 
 ```json
@@ -128,11 +300,14 @@ Otros útiles (según necesidad): `npx prisma db pull` (introspección desde una
   ],
   "scripts": {
     "dev": "npm run dev --workspaces",
-    "build": "npm run build --workspaces",
-    "start": "npm run start --workspaces"
+    "build": "docker compose -f docker-compose.prod.yml build",
+    "start": "docker compose -f docker-compose.prod.yml up -d",
+    "stop": "docker compose -f docker-compose.prod.yml down"
   }
 }
 ```
+
+> **Nota:** `dev` corre los proyectos en local con npm. Los comandos `build`, `start` y `stop` usan Docker Compose y están pensados para el deploy en el VPS. Ver sección de Docker Compose más abajo.
 
 Instalar todo:
 
@@ -140,18 +315,20 @@ Instalar todo:
 npm install
 ```
 
-## 5. 🧩 Estructura final (repo)
+## 6. 🧩 Estructura final (repo)
 
 ```text
 <nombre-proyecto>/
   ├── frontend/
   ├── backend/
+  ├── docker-compose.yml
+  ├── docker-compose.prod.yml
   ├── package.json
   └── .gitignore
 ```
 (Tambien se sugiere crear una carpeta shared pero todavia no encontré motivos para hacerlo)
 
-## 6. 🧹 .gitignore
+## 7. 🧹 .gitignore
 
 Base recomendada:
 
@@ -177,19 +354,23 @@ pnpm-debug.log*
 
 # Prisma local (solo si usás SQLite)
 prisma/dev.db*
+
+# Docker
+.dockerignore
+docker-compose.override.yml
 ```
 
 Nota: gran momento para hacer un segundo commit:
 ```bash
 git add .
-git commit -m "project setup"
+git commit -m "project setup + ci"
 git push
 ```
 
-## 7. 🖥️ VPS
+## 8. 🖥️ VPS
 
 
-### 7.1 Árbol recomendado 
+### 8.1 Árbol recomendado 
 (no tocar nada todavía, sólo para ver como vamos a trabajar)
 ```text
 /var/www/<nombre-proyecto>/
@@ -204,7 +385,7 @@ git push
 | `current/` | **No** es una copia del código: es un **enlace simbólico** a *una* carpeta dentro de `releases/`. Cambiar deploy = cambiar a qué release apunta `current`. |
 | `shared/` | `.env` de producción, uploads, certificados locales si aplica, etc. No se borra al publicar una release nueva. |
 
-### 7.2 Setup inicial
+### 8.2 Setup inicial
 Primero logearse en el servidor:
 ```bash
 ssh root@72.61.50.55
@@ -216,7 +397,7 @@ mkdir -p /var/www/<nombre-proyecto>/{releases,shared}
 
 `current/` **no** se crea con `mkdir`: aparece cuando hagas el primer `ln -sfn` (ver más abajo).
 
-### 7.3 Cómo se crea una release (cada deploy)
+### 8.3 Cómo se crea una release (cada deploy)
 
 En esta guía cada release es un `git clone` nuevo en una carpeta con nombre fijo (`release-1`, `release-2`, …). Es simple y permite rollback instantáneo.
 
@@ -225,12 +406,13 @@ En esta guía cada release es un `git clone` nuevo en una carpeta con nombre fij
 cd /var/www/<nombre-proyecto>/releases
 git clone https://github.com/lambdaworksar/<nombre-proyecto> release-<n>
 cd release-<n>
-npm ci
-npm run build --workspaces
+
+# Build con Docker Compose
+docker compose -f docker-compose.prod.yml build
 ```
 
 
-### 7.4 Primera vez: apuntar `current`
+### 8.4 Primera vez: apuntar `current`
 
 `current` debe ser un symlink a la release que querés en producción:
 
@@ -241,38 +423,46 @@ Ahora el current esta apuntando a `release-<n>`
 
 ### Mantenimiento:
 
-### 7.5 Deploy siguiente
+### 8.5 Deploy siguiente
 
 ```bash
 cd /var/www/<nombre-proyecto>/releases
 git clone <url-del-repo> release-<n+1>
 cd release-<n+1>
-npm ci
-npm run build --workspaces
+
+# Build con Docker Compose
+docker compose -f docker-compose.prod.yml build
+
+# Levantar los servicios
+docker compose -f docker-compose.prod.yml up -d
 
 # Cambiar la versión activa
 ln -sfn /var/www/<nombre-proyecto>/releases/release-<n+1> /var/www/<nombre-proyecto>/current
 
-pm2 reload <nombre-proyecto>-backend
-pm2 reload <nombre-proyecto>-web
+pm2 reload <nombre-proyecto>-backend   # ⚠️ Revisar: con Docker esto puede no ser necesario
+pm2 reload <nombre-proyecto>-web       # ⚠️ Revisar: con Docker esto puede no ser necesario
 ```
 
-### 7.6 Rollback
+### 8.6 Rollback
 
 Si `release-<n+1>` falla, volvé el puntero:
 
 ```bash
 ln -sfn /var/www/<nombre-proyecto>/releases/release-<n> /var/www/<nombre-proyecto>/current
-pm2 reload /var/www/<nombre-proyecto>/shared/ecosystem.config.js
+
+# Con Docker Compose, volver a levantar desde la release anterior:
+docker compose -f docker-compose.prod.yml up -d
+
+pm2 reload /var/www/<nombre-proyecto>/shared/ecosystem.config.js   # ⚠️ Revisar: con Docker esto puede no ser necesario
 ```
 
-### 7.7 Limpieza de releases viejas
+### 8.7 Limpieza de releases viejas
 
 Las carpetas en `releases/` **no** se borran solas. Política típica: conservar las últimas N releases y borrar el resto **solo** cuando estés seguro de que no necesitás rollback a ellas.
 
 **No borres** la release a la que apunta `current` (comprobá con `readlink -f /var/www/<nombre-proyecto>/current`).
 
-### 7.8 ⚙️ PM2 (process manager)
+### 8.8 ⚙️ PM2 (process manager)
 
 Primero verificar que puertos están disponibles para usar con el comando:
 ```bash
@@ -329,9 +519,9 @@ pm2 startup
 ```
 
 
-## 8. 🌐 HestiaCP: dominio, proxy y SSL (backend y frontend)
+## 9. 🌐 HestiaCP: dominio, proxy y SSL (backend y frontend)
 
-### 8.1 Crear templates desde VPS
+### 9.1 Crear templates desde VPS
 ```bash
 cd /usr/local/hestia/data/templates/web/nginx/
 
@@ -361,7 +551,7 @@ Una vez creados los templates recargar el config de Hestia desde la consola:
 ```bash
 v-rebuild-web-domains user
 ```
-### 8.2 Dominios y DNS
+### 9.2 Dominios y DNS
 
 **Dominios recomendados:**
 
@@ -390,7 +580,7 @@ Por ejemplo:
 
 Ya debería estar funcionando todo OK. El único error que encontré que puede ocurrir es el siguiente:
 
-### 8.3 Error (Let's Encrypt / ACME)
+### 9.3 Error (Let's Encrypt / ACME)
 
 Puede aparecer el error (por algún motivo sólo lo vi para dominios de backend):
 ```Error: Let's Encrypt validation status 400 (test.api.lambdaworks.ar). Details: 403:"72.61.50.55: Invalid response from http://test.api.lambdaworks.ar/.well-known/acme-challenge/UvQi8XxbfjddTF8qi6vs6_M9BkqYwan3HDlxbhjIJ78: 404"```
@@ -405,7 +595,7 @@ v-add-letsencrypt-domain LambdaWorks <dominio>
 Y volver a asignar el template desde hestia.
 
 
-## 9. 🚀 Deploy en el VPS (releases + build monorepo)
+## 10. 🚀 Deploy en el VPS (releases + build monorepo)
 
 Cada release incluye **frontend y backend**. En la raíz del repo:
 
@@ -428,7 +618,7 @@ pm2 reload /var/www/<nombre-proyecto>/shared/ecosystem.config.js
 ```
 
 
-## 10. 🧪 Entorno de testing
+## 11. 🧪 Entorno de testing
 
 Dominios sugeridos (misma convención que producción, con prefijo `dev.`):
 
@@ -437,9 +627,9 @@ dev.<nombre-proyecto>.api.lambdaworks.ar   → backend
 dev.<nombre-proyecto>.lambdaworks.ar      → frontend (Next.js)
 ```
 
-Crear un proyecto como ya hicimos, las unicas diferencias son al momento de clonar el repo para releases, clonar directamente la rama `dev`:
+Crear un proyecto como ya hicimos, las unicas diferencias son al momento de clonar el repo para releases, clonar directamente la rama `develop`:
 ```bash
-git clone -b dev --single-branch https://github.com/lambdaworksar/<nombre-proyecto>-dev release-<n>
+git clone -b develop --single-branch https://github.com/lambdaworksar/<nombre-proyecto>-dev release-<n>
 
 ```
 
@@ -478,253 +668,3 @@ Después se debería manejar como un proyecto separado de producción con polít
 # PostgreSQL en VPS
 
 ---
-
-## 1) Convencion de nombres (obligatoria)
-
-Para mantener orden entre proyectos:
-
-- **DB produccion**: `<proyecto>_prod`
-- **DB testing/dev**: `<proyecto>_dev`
-- **Usuario app**: `<proyecto>`
-
-Ejemplo para Optica Marani:
-
-- `opticamarani_prod`
-- `opticamarani_dev`
-- `opticamarani`
-
-Reglas:
-
-- siempre minusculas
-- usar `_` para separar
-- sin espacios, tildes ni guiones
-
----
-
-## 2) Requisitos en el VPS
-
-Instalar PostgreSQL (si no esta):
-
-```bash
-sudo apt update
-sudo apt install postgresql postgresql-contrib -y
-```
-
-Verificar que este activo:
-
-```bash
-sudo systemctl status postgresql
-```
-
----
-
-## 3) Primera creacion de DB (Optica Marani)
-
-Variables del ejemplo:
-
-- `DB_PROD=opticamarani_prod`
-- `DB_DEV=opticamarani_dev`
-- `APP_USER=opticamarani`
-
-Entrar a PostgreSQL como admin del sistema:
-
-```bash
-sudo -u postgres psql
-```
-
-Crear usuario (una sola vez por proyecto):
-
-```sql
-CREATE USER opticamarani WITH PASSWORD 'CAMBIAR_PASSWORD_SEGURA';
-```
-
-Crear bases y asignar owner:
-
-```sql
-CREATE DATABASE opticamarani_prod OWNER opticamarani;
-CREATE DATABASE opticamarani_dev OWNER opticamarani;
-```
-
-Permisos explicitos:
-
-```sql
-GRANT ALL PRIVILEGES ON DATABASE opticamarani_prod TO opticamarani;
-GRANT ALL PRIVILEGES ON DATABASE opticamarani_dev TO opticamarani;
-```
-
-**Prisma Migrate (`migrate dev`):** hace falta que el usuario pueda crear bases temporales (shadow database). Sin eso falla con **P3014**. Asignar una sola vez:
-
-```sql
-ALTER USER opticamarani CREATEDB;
-\q
-```
-
-Comprobar que figure `Create DB` en atributos:
-
-```bash
-sudo -u postgres psql -c "\du opticamarani"
-```
-
----
-
-## 4) Como acceder despues (dia a dia)
-
-Conexion directa por consola:
-
-```bash
-psql -h localhost -U opticamarani -d opticamarani_prod -W
-psql -h localhost -U opticamarani -d opticamarani_dev -W
-```
-
-En backend (`.env`) usar una URL por entorno.
-
-Produccion:
-
-```env
-DATABASE_URL=postgresql://opticamarani:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_prod
-```
-
-Testing/dev:
-
-```env
-DATABASE_URL=postgresql://opticamarani:CAMBIAR_PASSWORD_SEGURA@localhost:5432/opticamarani_dev
-```
-
-Si usan Prisma, recordar:
-
-```bash
-cd backend
-npx prisma migrate deploy   # prod
-npx prisma migrate dev      # dev local/testing
-npx prisma generate
-```
-
----
-
-## 5) Prisma: error P3014 (shadow database)
-
-Si al correr `npx prisma migrate dev` aparece:
-
-```text
-Error: P3014
-
-Prisma Migrate could not create the shadow database. Please make sure the database user has permission to create databases.
-...
-ERROR: permission denied to create database
-```
-
-**Causa:** `migrate dev` necesita una base “shadow” que Prisma crea y borra; el rol de PostgreSQL usado en `DATABASE_URL` debe poder crear bases (`CREATEDB`).
-
-**Solución** (reemplazar `opticamarani` por el usuario del proyecto):
-
-```bash
-sudo -u postgres psql -c "ALTER USER opticamarani CREATEDB;"
-sudo -u postgres psql -c "\du opticamarani"
-```
-
-En `\du` debe verse **Create DB** en la columna de atributos.  
-Vuelve a ejecutar:
-
-```bash
-cd backend
-npx prisma migrate dev
-```
-
-**Alternativa** si no quieren dar `CREATEDB`: crear una DB fija para shadow y usar `shadowDatabaseUrl` en `schema.prisma` (ver [documentación de Prisma](https://pris.ly/d/migrate-shadow)).
-
-**Nota:** el aviso `package.json#prisma is deprecated` viene de tener el seed en `package.json`; en Prisma 7 conviene migrar a `prisma.config.ts`. No afecta a que las migraciones funcionen hoy.
-
----
-
-## 6) Copiar DB de produccion a testing (prod -> dev)
-
-Este flujo sirve para probar con datos reales sin tocar produccion.
-
-### 6.1 Dump de produccion
-
-Formato custom (`-Fc`) recomendado:
-
-```bash
-PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
-  -h localhost \
-  -U opticamarani \
-  -d opticamarani_prod \
-  -Fc \
-  -f /tmp/opticamarani_prod.dump
-```
-
-### 6.2 Recrear base de testing limpia
-
-```bash
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS opticamarani_dev;"
-sudo -u postgres psql -c "CREATE DATABASE opticamarani_dev OWNER opticamarani;"
-```
-
-### 6.3 Restore en testing
-
-```bash
-PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_restore \
-  -h localhost \
-  -U opticamarani \
-  -d opticamarani_dev \
-  --no-owner \
-  --no-privileges \
-  /tmp/opticamarani_prod.dump
-```
-
-### 6.4 Verificacion rapida
-
-```bash
-PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' psql \
-  -h localhost \
-  -U opticamarani \
-  -d opticamarani_dev \
-  -c "\dt"
-```
-
-### 6.5 Recomendaciones de seguridad
-
-- nunca restaurar sobre `*_prod`
-- hacer backup antes de cada restore
-- si hay datos sensibles, anonimizar luego del restore (clientes, telefonos, emails, etc.)
-
----
-
-## 7) Comandos utiles de operacion
-
-Listar bases:
-
-```bash
-sudo -u postgres psql -c "\l"
-```
-
-Listar usuarios/roles:
-
-```bash
-sudo -u postgres psql -c "\du"
-```
-
-Cambiar password del usuario app:
-
-```bash
-sudo -u postgres psql -c "ALTER USER opticamarani WITH PASSWORD 'NUEVA_PASSWORD';"
-```
-
-Backup rapido:
-
-```bash
-PGPASSWORD='CAMBIAR_PASSWORD_SEGURA' pg_dump \
-  -h localhost -U opticamarani -d opticamarani_prod \
-  > /tmp/opticamarani_prod_$(date +%F).sql
-```
-
----
-
-## 8) Checklist por cada nuevo proyecto/cliente
-
-1. Definir `<proyecto>_prod`, `<proyecto>_dev`, `<proyecto>`.
-2. Crear usuario app (si no existe), DB prod y DB dev, y `ALTER USER ... CREATEDB` si usan `prisma migrate dev`.
-3. Probar conexion con `psql` en ambas.
-4. Configurar `DATABASE_URL` por entorno en `.env`.
-5. Correr migraciones Prisma segun entorno.
-6. Definir rutina de backup y (si aplica) rutina de clon `prod -> dev`.
