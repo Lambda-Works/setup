@@ -668,3 +668,36 @@ Después se debería manejar como un proyecto separado de producción con polít
 # PostgreSQL en VPS
 
 ---
+
+
+
+```
+# crear dominio
+hestia v-add-web-domain LambdaWorks test.lambdaworks.ar
+# eliminar dominio
+# hestia v-delete-web-domain LambdaWorks test.lambdaworks.ar
+
+# agregar certificado SSL
+hestia v-add-letsencrypt-domain LambdaWorks test.lambdaworks.ar
+
+# json con puertos libres
+# {
+#   "start_port": 3000,
+#   "requested": 2,
+#   "ports": [
+#     "3000",
+#     "3002"
+#   ]
+# }
+get-ports <n>
+
+
+create-proxy-templates <n1> <n2> ... <nn>
+hestia v-rebuild-web-domains LambdaWorks
+
+hestia v-change-web-domain-proxy-tpl LambdaWorks test.lambdaworks.ar node-<n>
+
+hestia v-rebuild-web-domain LambdaWorks test.lambdaworks.ar
+
+
+```
