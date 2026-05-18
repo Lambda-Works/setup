@@ -672,6 +672,28 @@ Después se debería manejar como un proyecto separado de producción con polít
 
 
 ```
+# DNS
+# Si el dominio es un subdominio de lambdaworks.ar (<subdominio>.lambdaworks.ar)
+hestia v-add-dns-record LambdaWorks lambdaworks.ar <subdominio> A 72.61.50.55
+
+# Dominios externos (<dominio>, por ejemplo: github.com)
+hestia v-add-dns-domain LambdaWorks <dominio>
+# revertir paso anterior
+# hestia v-delete-dns-domain LambdaWorks <dominio>
+hestia v-add-dns-record LambdaWorks <dominio> @ A 72.61.50.55
+hestia v-add-dns-record LambdaWorks <dominio> www CNAME <dominio>. # importante el punto final
+hestia v-add-dns-record LambdaWorks <dominio> api A 72.61.50.55
+
+
+
+
+# Para eliminar un registro:
+# Listamos los registros para oservar el ID
+hestia v-list-dns-records LambdaWorks lambdaworks.ar
+hestia v-delete-dns-record LambdaWorks lambdaworks.ar <id>
+
+
+
 # crear dominio
 hestia v-add-web-domain LambdaWorks test.lambdaworks.ar
 # eliminar dominio
@@ -698,6 +720,13 @@ hestia v-rebuild-web-domains LambdaWorks
 hestia v-change-web-domain-proxy-tpl LambdaWorks test.lambdaworks.ar node-<n>
 
 hestia v-rebuild-web-domain LambdaWorks test.lambdaworks.ar
+
+# otros comandos
+# listar dominios
+hestia v-list-web-domains LambdaWorks
+# ver registros DNS
+hestia v-list-dns-records LambdaWorks lambdaworks.ar
+
 
 
 ```
