@@ -515,9 +515,19 @@ v-rebuild-web-domains user
 |Frontend| Producción | `<nombre-proyecto>.lambdaworks.ar` |
 |Frontend| Desarrollo | `dev.<nombre-proyecto>.lambdaworks.ar` |
 
-Desde Vercel (https://vercel.com/lambda-works-projects/~/domains/lambdaworks.ar) agregar los registros DNS de tipo A para los 4 dominios con value 72.61.50.55
-Por ejemplo:
-![](img/registros-dns.png)
+**Agregar registros DNS desde el VPS** (subdominios de `lambdaworks.ar`):
+```bash
+hestia v-add-dns-record LambdaWorks lambdaworks.ar <subdominio> A 72.61.50.55
+```
+Ejemplo para un proyecto `hub`:
+```bash
+hestia v-add-dns-record LambdaWorks lambdaworks.ar hub A 72.61.50.55
+hestia v-add-dns-record LambdaWorks lambdaworks.ar hub.api A 72.61.50.55
+hestia v-add-dns-record LambdaWorks lambdaworks.ar dev.hub A 72.61.50.55
+hestia v-add-dns-record LambdaWorks lambdaworks.ar dev.hub.api A 72.61.50.55
+```
+
+> Si el proyecto usa un dominio externo (no subdominio de `lambdaworks.ar`), ver la sección de extras al final.
 
 **Pasos en Hestia (repetir por cada dominio de API):**
 0. Ingresar a Hestia (https://72.61.50.55:8083/login/) con usuario `user`
@@ -612,16 +622,10 @@ PUERTO_FRONTEND=3005
 Después se debería manejar como un proyecto separado de producción con políticas de mergeo de `develop` → `production`.
 
 
-### Extras (después agregar donde corresponda):
-# PostgreSQL en VPS
-
----
-
-
+### Extras (comandos útiles de Hestia):
 
 ```
-# DNS
-# Si el dominio es un subdominio de lambdaworks.ar (<subdominio>.lambdaworks.ar)
+# DNS — subdominios de lambdaworks.ar
 hestia v-add-dns-record LambdaWorks lambdaworks.ar <subdominio> A 72.61.50.55
 
 # Dominios externos (<dominio>, por ejemplo: github.com)
