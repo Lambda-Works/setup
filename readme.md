@@ -12,14 +12,14 @@
 5. Workspaces  
 6. Estructura final (repo)  
 7. `.gitignore`  
-8. VPS — estructura, releases, PM2  
+8. VPS — estructura, releases, puertos y Docker  
 9. HestiaCP — proxy, dominio, SSL, DNS, error Let’s Encrypt  
 10. Deploy en el VPS (releases + build monorepo)  
 11. Entorno de testing
 
 ---
 
-> **Arquitectura por defecto de esta guía:** frontend (Next.js) y backend (NestJS) en el **mismo VPS** — Hestia (proxy + SSL), Docker Compose y PM2.
+> **Arquitectura por defecto de esta guía:** frontend (Next.js) y backend (NestJS) en el **mismo VPS** — Hestia (proxy + SSL) y Docker Compose.
 
 ## 1. 🚀 Setup repo
 
@@ -36,7 +36,7 @@ echo "# <nombre-proyecto>" >> README.md
 git add README.md
 git commit -m "first commit"
 git branch -M main
-git remote add origin https://github.com/lambdaworksar/<nombre-proyecto>.git
+git remote add origin git@github.com:Lambda-Works/<nombre-proyecto>.git
 git push -u origin main
 
 # Crear y pushear ramas principales
@@ -244,45 +244,21 @@ services:
   backend:
     build: ./backend
     ports:
-      - "${PUERTO_API}:3001"
+      - "${PUERTO_BACKEND}:3001"
     env_file: ./backend/.env
   frontend:
     build: ./frontend
     ports:
-      - "${PUERTO_WEB}:3000"
+      - "${PUERTO_FRONTEND}:3000"
     env_file: ./frontend/.env
 ```
 
-**`backend/Dockerfile`**:
-
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-CMD ["npm", "start"]
-```
-
-**`frontend/Dockerfile`**:
-
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-CMD ["npm", "start"]
-```
-
-> **Importante:** El archivo `docker-compose.prod.yml` es el que el Hub utiliza para ejecutar el deploy en el VPS. Los puertos de producción se inyectan como variables de entorno (`PUERTO_API`, `PUERTO_WEB`) definidas en el servidor.
+> **Importante:** El archivo `docker-compose.prod.yml` es el que el Hub utiliza para ejecutar el deploy en el VPS. Los puertos se inyectan desde el `.env` en `shared/` (symlinkeado como `.env` en el directorio de la release). Docker Compose los lee automáticamente.
 >
 > **Convenciones por defecto:**
-> - Backend escucha en el puerto `3001`.
-> - Frontend escucha en el puerto `3000`.
-> - Se pueden cambiar editando los `ports` en `docker-compose.yml` y las variables `PUERTO_API` / `PUERTO_WEB` en el VPS.
+> - Backend escucha en el puerto `3001` dentro del container.
+> - Frontend escucha en el puerto `3000` dentro del container.
+> - Los puertos externos (`PUERTO_BACKEND`, `PUERTO_FRONTEND`) los asigna `get-ports` y se persisten en `shared/.env`.
 > - El backend debe exponer un endpoint `GET /health` que responda HTTP 200 para que el CI pueda verificar que levantó correctamente.
 
 ---
@@ -374,7 +350,7 @@ git push
 (no tocar nada todavía, sólo para ver como vamos a trabajar)
 ```text
 /var/www/<nombre-proyecto>/
-  ├── current/          → symlink a la release activa (lo usa PM2)
+  ├── current/          → symlink a la release activa (lo usa Docker)
   ├── releases/         → una carpeta por versión desplegada
   └── shared/           → datos que NO se versionan y sobreviven a cada deploy
 ```
@@ -404,7 +380,7 @@ En esta guía cada release es un `git clone` nuevo en una carpeta con nombre fij
 
 ```bash
 cd /var/www/<nombre-proyecto>/releases
-git clone https://github.com/lambdaworksar/<nombre-proyecto> release-<n>
+git clone git@github.com:Lambda-Works/<nombre-proyecto>.git release-<n>
 cd release-<n>
 
 # Build con Docker Compose
@@ -427,20 +403,18 @@ Ahora el current esta apuntando a `release-<n>`
 
 ```bash
 cd /var/www/<nombre-proyecto>/releases
-git clone <url-del-repo> release-<n+1>
+git clone git@github.com:Lambda-Works/<nombre-proyecto>.git release-<n+1>
 cd release-<n+1>
 
-# Build con Docker Compose
-docker compose -f docker-compose.prod.yml build
+# Symlink al .env de shared (Docker busca .env en el directorio actual)
+ln -sf ../shared/.env .env
 
-# Levantar los servicios
+# Build y levantar
+docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml up -d
 
 # Cambiar la versión activa
 ln -sfn /var/www/<nombre-proyecto>/releases/release-<n+1> /var/www/<nombre-proyecto>/current
-
-pm2 reload <nombre-proyecto>-backend   # ⚠️ Revisar: con Docker esto puede no ser necesario
-pm2 reload <nombre-proyecto>-web       # ⚠️ Revisar: con Docker esto puede no ser necesario
 ```
 
 ### 8.6 Rollback
@@ -451,9 +425,10 @@ Si `release-<n+1>` falla, volvé el puntero:
 ln -sfn /var/www/<nombre-proyecto>/releases/release-<n> /var/www/<nombre-proyecto>/current
 
 # Con Docker Compose, volver a levantar desde la release anterior:
+cd /var/www/<nombre-proyecto>/current
+ln -sf ../shared/.env .env
+docker compose -f docker-compose.prod.yml down
 docker compose -f docker-compose.prod.yml up -d
-
-pm2 reload /var/www/<nombre-proyecto>/shared/ecosystem.config.js   # ⚠️ Revisar: con Docker esto puede no ser necesario
 ```
 
 ### 8.7 Limpieza de releases viejas
@@ -462,61 +437,39 @@ Las carpetas en `releases/` **no** se borran solas. Política típica: conservar
 
 **No borres** la release a la que apunta `current` (comprobá con `readlink -f /var/www/<nombre-proyecto>/current`).
 
-### 8.8 ⚙️ PM2 (process manager)
+### 8.8 🐳 Puertos y variables de entorno
 
-Primero verificar que puertos están disponibles para usar con el comando:
+**get-ports** devuelve puertos libres en el VPS:
 ```bash
-get-ports
+get-ports 2
 ```
-Va a retornar dos números de puerto que vamos a usar en el siguiente archivo:
+Respuesta de ejemplo:
+```json
+{
+  "start_port": 3000,
+  "requested": 2,
+  "ports": ["3000", "3002"]
+}
+```
+
+Con esos puertos se escribe el archivo `shared/.env`:
 ```bash
-nano /var/www/<nombre-proyecto>/shared/ecosystem.config.js
+nano /var/www/<nombre-proyecto>/shared/.env
 ```
-Con el contenido:
-```js
-module.exports = {
-  apps: [
-    {
-      name: "<nombre-proyecto>-backend",
-      cwd: "/var/www/<nombre-proyecto>/current",
-      script: "npm",
-      args: "run start -w backend",
-      env: {
-        NODE_ENV: "production",
-        PORT: <PUERTO-BACKEND>
-      }
-    },
-    {
-      name: "<nombre-proyecto>-web",
-      cwd: "/var/www/<nombre-proyecto>/current",
-      script: "npm",
-      args: "run start -w frontend",
-      env: {
-        NODE_ENV: "production",
-        PORT: <PUERTO-FRONTEND>
-      }
-    }
-  ]
-};
+```env
+PUERTO_BACKEND=3000
+PUERTO_FRONTEND=3002
 ```
 
-`name` debe ser **único** entre los procesos gestionados por PM2 en ese servidor. Convención: `<nombre-proyecto>-backend` y `<nombre-proyecto>-web`.
-
-**Puerto (`PORT`):** también debe ser **único por proceso que escucha** en la misma interfaz (p. ej. `127.0.0.1`). Dos apps no pueden compartir el mismo puerto (de eso se encarga `get-ports`).
-
-
-Run:
-
+**El symlink al .env** se crea después de cada clone. Docker Compose busca `.env` en el directorio donde se ejecuta:
 ```bash
-# Levanta (o suma) los procesos definidos en ecosystem (API, front, etc.)
-pm2 start /var/www/<nombre-proyecto>/current/ecosystem.config.js
-
-# Guarda la lista actual de procesos PM2 para que sobreviva al reinicio del servicio pm2
-pm2 save
-
-# Genera el comando de arranque al boot del sistema (systemd/openrc); hay que copiar/ejecutar la línea que muestra
-pm2 startup
+cd /var/www/<nombre-proyecto>/current
+ln -sf ../shared/.env .env
+docker compose -f docker-compose.prod.yml up -d
 ```
+
+> **Importante:** los puertos deben ser únicos por proyecto. Dos proyectos no pueden compartir el mismo puerto en la misma interfaz — de eso se encarga `get-ports`.
+
 
 
 ## 9. 🌐 HestiaCP: dominio, proxy y SSL (backend y frontend)
@@ -595,26 +548,30 @@ v-add-letsencrypt-domain LambdaWorks <dominio>
 Y volver a asignar el template desde hestia.
 
 
-## 10. 🚀 Deploy en el VPS (releases + build monorepo)
+## 10. 🚀 Deploy en el VPS (releases + Docker Compose)
 
-Cada release incluye **frontend y backend**. En la raíz del repo:
+Cada release incluye **frontend y backend**:
 
 ```bash
 cd /var/www/<nombre-proyecto>/releases
-git clone <repo> release-<n+1>
+git clone git@github.com:Lambda-Works/<nombre-proyecto>.git release-<n+1>
 cd release-<n+1>
 
-npm ci
-npm run build --workspaces
+# Symlink al .env de shared
+ln -sf ../shared/.env .env
 
+# Build y levantar (Docker Compose lee las vars del .env)
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+
+# Cambiar la versión activa
 ln -sfn /var/www/<nombre-proyecto>/releases/release-<n+1> /var/www/<nombre-proyecto>/current
+```
 
-# pm2: recargar API y web individualmente
-pm2 reload <nombre-proyecto>-backend
-pm2 reload <nombre-proyecto>-web
-
-# O todo junto con:
-pm2 reload /var/www/<nombre-proyecto>/shared/ecosystem.config.js 
+Para **detener** los servicios:
+```bash
+cd /var/www/<nombre-proyecto>/current
+docker compose -f docker-compose.prod.yml down
 ```
 
 
@@ -627,41 +584,32 @@ dev.<nombre-proyecto>.api.lambdaworks.ar   → backend
 dev.<nombre-proyecto>.lambdaworks.ar      → frontend (Next.js)
 ```
 
-Crear un proyecto como ya hicimos, las unicas diferencias son al momento de clonar el repo para releases, clonar directamente la rama `develop`:
+**Mismo repo, distinta rama.** El entorno de desarrollo usa el mismo repositorio que producción pero clona la rama `develop`:
+
 ```bash
-git clone -b develop --single-branch https://github.com/lambdaworksar/<nombre-proyecto>-dev release-<n>
+cd /var/www/<nombre-proyecto>-dev/releases
+git clone -b develop --single-branch git@github.com:Lambda-Works/<nombre-proyecto>.git release-<n>
+cd release-<n>
 
+# Symlink al .env de shared (con puertos de dev y NODE_ENV=development)
+ln -sf ../shared/.env .env
+
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
+
+ln -sfn /var/www/<nombre-proyecto>-dev/releases/release-<n> /var/www/<nombre-proyecto>-dev/current
 ```
 
-Y en el `ecosystem.config.js` usar `NODE_ENV: "development"`
-```js
-module.exports = {
-  apps: [
-    {
-      name: "<nombre-proyecto>-dev-backend",
-      cwd: "/var/www/<nombre-proyecto>-dev/current",
-      script: "npm",
-      args: "run start -w backend",
-      env: {
-        NODE_ENV: "development",
-        PORT: <PUERTO-BACKEND-DEV>
-      }
-    },
-    {
-      name: "<nombre-proyecto>-dev-web",
-      cwd: "/var/www/<nombre-proyecto>-dev/current",
-      script: "npm",
-      args: "run start -w frontend",
-      env: {
-        NODE_ENV: "development",
-        PORT: <PUERTO-FRONTEND-DEV>
-      }
-    }
-  ]
-};
+El `shared/.env` de desarrollo lleva `NODE_ENV=development` y puertos distintos a los de producción, obtenidos con `get-ports 2`.
+
+```env
+# /var/www/<nombre-proyecto>-dev/shared/.env
+NODE_ENV=development
+PUERTO_BACKEND=3004
+PUERTO_FRONTEND=3005
 ```
 
-Después se debería manejar como un proyecto separado de producción con políticas de mergeo.
+Después se debería manejar como un proyecto separado de producción con políticas de mergeo de `develop` → `production`.
 
 
 ### Extras (después agregar donde corresponda):
